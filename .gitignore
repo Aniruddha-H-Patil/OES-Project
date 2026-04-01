@@ -1,0 +1,21 @@
+# --- Firebase & Secrets (SABSE ZAROORI) ---
+secrets_config.py
+creds.json
+.env
+
+# --- Python Junk (Hatao ise) ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Project Specific (Personal Data) ---
+# Isse login session GitHub pe nahi jayega
+user_session.json
+# Isse downloaded student photos nahi jayengi
+temp_assets/
+*.log
+
+# --- OS Files ---
+.DS_Store
+Thumbs.db
