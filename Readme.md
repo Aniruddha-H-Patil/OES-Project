@@ -19,8 +19,9 @@
 
 ## 📂 Project Structure
 The system is modularized into dedicated components for better maintainability:
+* `Exam.py` & `Dashboard.py`: Main App startup & main user dashboard.
 * `auth_manager.py` & `auth_ui.py`: Handles secure user access.
-* `Exam_window.py` & `Question_updater.py`: Core logic for the testing engine.
+* `Exam_window.py` & `Database_updater.py`: Core logic for the testing engine.
 * `Result.py` & `Result_window.py`: Real-time score calculation and analytics.
 
 ## 🔒 Security First
