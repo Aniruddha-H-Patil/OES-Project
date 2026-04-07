@@ -57,6 +57,7 @@ class AuthUI(ctk.CTkFrame):
         # --- GENDER SECTION ---
         ctk.CTkLabel(self.scroll_canvas, text="Gender", text_color="#1a3a5f", font=("Segoe UI", 13)).grid(pady=(10,0))
         self.gender_combo = ctk.CTkComboBox(self.scroll_canvas, values=["Male", "Female", "Other"], width=320)
+        self.gender_combo.set("Select Gender") # Default set karo
         self.gender_combo.grid(pady=5)
 
         # --- CATEGORY SECTION ---
@@ -145,16 +146,29 @@ class AuthUI(ctk.CTkFrame):
             self.update_preview(img)
 
     def submit_data(self):
-        # 1. Category Validation
+        # 1. DROP-DOWN VALIDATIONS
+        selected_gen = self.gender_combo.get()
         selected_cat = self.category_combo.get()
+
+        if selected_gen in ["SELECT GENDER", "Select Gender", ""]:
+             tmsg.showwarning("Warning", "Bhai, Gender toh select kar le pehle!")
+             return
+
+        if selected_cat == "SELECT CATEGORY":
+            tmsg.showwarning("Warning", "Category select karna bhul gaya kya?")
+            return
+
+        # "Others" (Category) logic
         if selected_cat == "Others":
             final_cat = self.other_cat_entry.get().strip() 
             if not final_cat:
-                tmsg.showwarning("Warning", "Please specify your category!")
-                return # <-- Ye sirf 'Other' khali hone par chalega
+                tmsg.showwarning("Warning", "Bhai, specify toh kar ki 'Other' mein kaunsi category hai!")
+                return 
         else:
             final_cat = selected_cat
             
+        # 2. DATA COLLECTION & CLEANING
+        # Sab kuch .strip() kar rahe hain taaki extra spaces na rahein
         user_data = {
             "name": self.name_entry.get().strip(),
             "mobile": self.mobile_entry.get().strip(),
@@ -162,31 +176,50 @@ class AuthUI(ctk.CTkFrame):
             "day": self.day.get(),
             "month": self.month.get(),
             "year": self.year.get(),
-            "gender": self.gender_combo.get(),
+            "gender": selected_gen,
             "category": final_cat,
-            "password": self.pass_entry.get()
+            "password": self.pass_entry.get().strip()
         }
 
-        # Check agar koi field khali hai
-        if any(v == "" for v in user_data.values()):
-            tmsg.showwarning("Incomplete Form", "Please fill all Required Fields!")
+        # 3. ADVANCED VALIDATIONS (Bhai dhyan de yahan!)
+        
+        # Check empty fields
+        if any(not str(v).strip() for v in user_data.values()):
+            tmsg.showwarning("Incomplete Form", "Saare fields bharna zaroori hai, Boss!")
+            return
+
+        # Mobile Validation (Sirf 10 digits hone chahiye)
+        if not (user_data['mobile'].isdigit() and len(user_data['mobile']) == 10):
+            tmsg.showwarning("Invalid Mobile", "Bhai, mobile number 10 digits ka hona chahiye!")
+            return
+
+        # Email Validation (Basic check)
+        if "@" not in user_data['email'] or "." not in user_data['email']:
+            tmsg.showwarning("Invalid Email", "Email ka format thoda ajeeb hai, sahi karle!")
             return
         
+        # Photo Check
         if self.captured_image is None:
-            tmsg.showwarning("Photo Missing", "Bhai, pehle photo toh khich le!")
-            return            
+            tmsg.showwarning("Photo Missing", "Bhai, photo ke bina registration nahi hoga!")
+            return                
 
-        # 2. REVIEW WINDOW & FINAL PROCESS
-        from auth_manager import open_review_window, process_registration # <-- Dono import yahan honge
+        # 4. REVIEW WINDOW & FINAL PROCESS
+        # Note: auth_manager se logic utha raha hai
+        from auth_manager import open_review_window, process_registration 
         
         def final_confirm():
+            # Yahan loader dikhana chahiye agar photo badi hai toh
             app_no = process_registration(self.db, self.auth, user_data, self.captured_image)
+            
             if app_no:
-                tmsg.showinfo("Registration Successful", f"YOUR APPLICATION NO.:\n{app_no}\n\nPlease save this number\nfor future refrence.")
-                # Registration success hone par home/login par bhej do
-                self.controller.show_home() # Ya show_home() jo tumne rakha hai
+                tmsg.showinfo("Mubarak Ho!", 
+                              f"Registration Successful! 🎉\n\nYOUR APPLICATION NO.: {app_no}\n\nIse save karlo, login mein kaam aayega.")
+                self.controller.show_home()
+            else:
+                # Error handle manager ke tmsg se ho jayega
+                pass
 
-        # Review window kholo
+        # Ab review window khulega
         open_review_window(self.db, user_data, self.captured_image, final_confirm)
 
 class LoginUI(ctk.CTkFrame):
@@ -224,13 +257,18 @@ class LoginUI(ctk.CTkFrame):
             tmsg.showwarning("Warning", "Don't leave fields empty, Boss!")
             return
 
-        # YAHAN ASLI MAGIC HOGA (Manager call)
+        # Manager call
         success, user_data, is_new = manager.validate_dashboard_login(self.db, self.auth, app_no, pwd)
 
         if success:
             if is_new:
-               tmsg.showinfo("Success", f"Welcome {user_data['name']}!\nRoll No: {user_data['roll_no']}")
-            # AB YAHAN SE DASHBOARD KHULEGA
+                tmsg.showinfo("Welcome!", f"Hello {user_data['name']}!\nYour Roll No: {user_data['roll_no']}\nRegistration Complete.")
+            
+            # Dashboard par bhej do
             self.controller.show_dashboard(user_data)
         else:
-            tmsg.showerror("Error", "Invalid Application Number or Password!")
+            # 🟢 SPECIAL CHECK: Agar user pehle se login hai
+            if user_data == "ALREADY_LOGGED_IN":
+                tmsg.showerror("Access Denied", "Bhai, tu pehle se kisi aur device pe login hai!\nYa toh wahan se logout kar, ya 2 min wait kar.")
+            else:
+                tmsg.showerror("Login Failed", "Invalid Application Number or Password!")

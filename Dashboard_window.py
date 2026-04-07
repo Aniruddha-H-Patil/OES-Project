@@ -7,6 +7,7 @@ from tkinter import messagebox as tmsg
 import os
 import Exam_window
 import Result_window
+import auth_manager as manager
 
 class StudentDashboard(ctk.CTkToplevel):
     def __init__(self, parent, user_data, db):
@@ -29,7 +30,9 @@ class StudentDashboard(ctk.CTkToplevel):
 
         self.configure(fg_color=self.BG_COLOR)
         self.setup_ui()
-        
+
+        self.protocol("WM_DELETE_WINDOW", self.parent.on_dashboard_close)
+
         # Photo loading in background
         threading.Thread(target=self.load_profile_photo, daemon=True).start()
 
@@ -104,7 +107,8 @@ class StudentDashboard(ctk.CTkToplevel):
 
     def load_available_tests(self):
         try:
-            papers = self.db.child("papers").get().val()
+            token = manager.get_token()
+            papers = self.db.child("papers").get(token).val()
             if not papers: return
             
             for widget in self.test_list_frame.winfo_children(): widget.destroy()
@@ -159,49 +163,72 @@ class StudentDashboard(ctk.CTkToplevel):
     def reset_after_exam(self):
         self.test_on = False
         self.deiconify() # Dashboard wapas lao# Dashboard wapas dikhao
+        self.load_available_tests()
 
     def start_exam_logic(self, p_id, p_info):
+        """
+        Firebase se metadata aur questions dono fetch karke sync karta hai.
+        """
         if self.test_on: return
         self.test_on = True
 
         try:
-            print(f"DEBUG: Fetching questions for ID: {p_id}")
-            
-            # 1. Pehle pura 'questions' node check karo
-            all_q_node = self.db.child("questions").get().val()
-            
-            if not all_q_node:
-                print("ERROR: 'questions' node hi nahi mila database mein!")
+            # 1. Security Token lo
+            token = manager.get_token()
+            print(f"DEBUG: Fetching Full Data for Paper ID: {p_id}")
+
+            # 2. PEHLA FETCH: Paper ki Details (Metadata) uthao
+            # Path: papers -> P001 (Isme 'subject', 'duration', 'TEST' milega)
+            paper_meta = self.db.child("papers").child(p_id).get(token).val()
+
+            # 3. DOOSRA FETCH: Asli Questions uthao
+            # Path: questions -> P001 (Isme Physics, Chemistry ke subjects milenge)
+            paper_content = self.db.child("questions").child(p_id).get(token).val()
+
+            if not paper_meta or not paper_content:
+                print(f"ERROR: Database mein Paper ID '{p_id}' ka data incomplete hai!")
+                tmsg.showerror("Fetch Error", f"Paper {p_id} ka data load nahi ho paya!")
                 self.test_on = False
                 return
 
-            # 2. Check karo kya p_id (P001) uske andar hai
-            if p_id not in all_q_node:
-                print(f"ERROR: {p_id} keys mein nahi hai. Available keys: {list(all_q_node.keys())}")
-                self.test_on = False
-                return
+            # 4. DATA SYNC: p_info ko update karo asli details se
+            p_info.update(paper_meta) 
+            p_info['all_questions'] = paper_content # Exam_window isi key ko dhoondta hai
 
-            # 3. Agar mil gaya toh data nikalo
-            all_questions = all_q_node.get(p_id)
-            
-            print(f"SUCCESS: Questions found for {p_id}!")
-            
-            p_info['all_questions'] = all_questions
+            # 5. USER DATA SYNC: Login screen par Sahi Subject dikhane ke liye
             combined_data = self.user_data.copy()
-            combined_data['subject'] = p_info.get('subject', 'General Paper') 
+            combined_data['current_paper_id'] = p_id
+            
+            # ✅ YAHAN HAI ASLI SYNC: 
+            # 'subject' key mein JSON se 'subject' (e.g. B. Tech) uthao
+            combined_data['subject'] = paper_meta.get('subject', 'General Paper')
 
+            # 6. Dashboard ko hide karo
             self.withdraw()
-            Exam_window.open_exam(
-                self, 
-                p_id, 
-                self.db, 
-                combined_data, 
-                p_info, 
-                self.reset_after_exam 
+
+            # 7. Naya Popup Window banao (Fresh Start)
+            self.exam_popup = ctk.CTkToplevel(self) 
+            self.exam_popup.title(f"BOSS Exam Portal - {p_id}")
+            self.exam_popup.attributes("-fullscreen", True)
+            
+            # 8. Exam Session Start
+            # Object ko 'self.exam_session' mein save karna zaroori hai (Crash fix)
+            self.exam_session = Exam_window.ExamSession(
+                window=self.exam_popup, 
+                paper_id=p_id, 
+                db=self.db, 
+                user_data=combined_data, 
+                paper_data=p_info, 
+                on_close_callback=self.reset_after_exam 
             )
+            
+            print(f"🚀 Nayi window mein Exam start ho gaya! Subject: {combined_data['subject']}")
+
         except Exception as e:
-            print(f"❌ Critical Fetch Error: {e}")
+            print(f"❌ Critical Sync Error: {e}")
+            tmsg.showerror("System Error", f"Test start nahi hua: {e}")
             self.test_on = False
+            self.deiconify() # Error pe Dashboard wapas dikhao
     
     def load_profile_photo(self):
     # Path yahan bhi define karna padega function ke andar
@@ -221,7 +248,9 @@ class StudentDashboard(ctk.CTkToplevel):
     # Dummy commands
     def home_click(self): print("Home Clicked")
 
-    def tests_click(self): print("Tests Clicked")
+    def tests_click(self):
+        self.load_available_tests() 
+        print("Tests Clicked")
     
     def results_click(self):
         user_id = self.user_data['roll_no']

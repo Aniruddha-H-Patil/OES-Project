@@ -7,9 +7,8 @@ from auth_ui import AuthUI, LoginUI
 from tkinter import messagebox as tmsg
 import auth_manager as manager
 import Dashboard_window
-import auth_manager
-from auth_manager import get_session
 import secrets_config
+import time
 
 # 1. Config ab secrets_config.py se aayega
 config = secrets_config.FIREBASE_CONFIG
@@ -35,6 +34,7 @@ class MainApp(ctk.CTk):
         self.PRIMARY_BLUE = "#1a3a5f"
         self.ACCENT_GREEN = "#10b981"
         self.BG_WHITE = "#f8fafc"
+        self.token_refresh_job = None
 
         # --- UI SETUP ---
         self.left_panel = ctk.CTkFrame(self, width=500, fg_color=self.PRIMARY_BLUE, corner_radius=0)
@@ -49,34 +49,92 @@ class MainApp(ctk.CTk):
         self.container.place(relx=0.5, rely=0.5, anchor="center")
         self.container.pack_propagate(False)
 
-        # --- AUTO-LOGIN LOGIC (Dhyan se dekho) ---
-        saved_app = manager.get_session()
-        token = manager.get_token()
+        # --- AUTO-LOGIN LOGIC (Upgraded) ---
+        # Isse window black nahi hogi aur background mein refresh chalega
+        self.after(100, self.check_auto_login)
+
+    def check_auto_login(self):
+        """Manager ka use karke session refresh aur auto-login handle karega"""
+        print("🔍 Checking for existing session...")
         
-        if saved_app:
+        # 1. Refresh logic call karo
+        session_data = manager.refresh_session_on_startup(auth)
+        
+        if session_data:
             try:
-                # 1. Firebase se data uthao (Dabba bharo)
+                saved_app = session_data.get("app_no")
+                token = session_data.get("idToken")
+                
+                # Global token update
+                manager.current_id_token = token 
+                
+                # 2. Fresh data fetch from DB
                 user_data = db.child("users").child(saved_app).get(token).val()
-                self.questions = db.child("papers").get().val()
                 
                 if user_data:
-                    # --- 🟢 YAHA PAR IMAGE LOGIC ---
+                    db.child("users").child(saved_app).update({"is_active": True}, token)
+                    print(f"🚀 Auto-login: {saved_app} marked Active.")
+                    user_data['idToken'] = token 
+                    
+                    # Image download logic
                     temp_path = "temp_assets/current_user.jpg"
                     if not os.path.exists(temp_path):
                         photo_url = user_data.get('photo_link')
                         if photo_url and photo_url != "Pending":
-                            # Manager ko bolo download kare
                             manager.download_temp_image(photo_url)
-                    # -------------------------------
 
-                    self.show_dashboard(user_data)
+                    print(f"✅ Welcome back, {user_data.get('name')}")
+                    
+                    # 3. Yahan Dashboard call ho raha hai, toh heartbeat wahan handle hogi
+                    self.show_dashboard(user_data) 
                 else:
                     self.show_home()
             except Exception as e:
-                print(f"Login Error: {e}")
+                print(f"❌ Auto-login error: {e}")
+                manager.clear_session()
                 self.show_home()
         else:
+            print("ℹ️ No session found, showing home screen.")
             self.show_home()
+
+    def schedule_token_refresh(self):
+        """Har 50 mins mein token refresh karega taaki session expire na ho"""
+        print("🔄 Background: Refreshing ID Token...")
+        new_data = manager.refresh_session_on_startup(auth)
+        if new_data:
+            manager.current_id_token = new_data.get("idToken")
+            print("✅ Background: Token refreshed successfully.")
+        
+        # 50 minutes baad phir se refresh call hoga
+        self.token_refresh_job = self.after(3000000, self.schedule_token_refresh)
+
+            # --- NEW: HEARTBEAT SYSTEM ---
+    def start_heartbeat(self):
+        """DB update without constant file reading"""
+        # Manager se directly memory wala token aur app_no uthao
+        token = manager.current_id_token
+        session = manager.get_session_data() # Sirf app_no ke liye
+        
+        if session and token:
+            app_no = session.get("app_no")
+            try:
+                db.child("users").child(app_no).update({"last_seen": time.time()}, token)
+                print("💓 Heartbeat sent...")
+            except:
+                print("⚠️ Heartbeat failed (Network issue?)")
+        
+        self.heart_job = self.after(30000, self.start_heartbeat)
+
+    def mark_offline_in_db(self):
+        session = manager.get_session_data()
+        token = manager.current_id_token
+        if session and token:
+            app_no = session.get("app_no")
+            try:
+                db.child("users").child(app_no).update({"is_active": False, "last_seen": 0}, token)
+                print("✅ Status set to Offline.")
+            except:
+                pass
 
     def setup_branding(self):
         ctk.CTkLabel(self.left_panel, text="BOSS", font=("Segoe UI", 90, "bold"), text_color="white").place(relx=0.1, rely=0.2)
@@ -108,60 +166,152 @@ class MainApp(ctk.CTk):
 
     def show_login(self):
         self.clear_container()
-        login_form = LoginUI(self.container, self, db, firebase.auth())
-        login_form.pack(fill="both", expand=True)
+        self.login_form = LoginUI(self.container, self, db, auth) 
+        self.login_form.pack(fill="both", expand=True)
 
-    def process_login_request(self):
-        app_no = self.app_no_entry.get().strip()
-        password = self.pass_entry.get().strip()
+    def process_login_request(self, app_no, password):
+        """Manual Login Request Handler with Token Syncing"""
         if not app_no or not password:
             tmsg.showwarning("Empty", "Please fill all fields!")
             return
         
-        success, user_data, is_new = manager.validate_dashboard_login(db, auth, app_no, password)
+        # 1. Firebase se login validate karwao
+        success, result, is_new = manager.validate_dashboard_login(db, auth, app_no, password)
+        
         if success:
-                self.studentdashboard(user_data)
+            # 🔥 CRITICAL: Manual login ke baad naya token 'manager' mein save karna zaroori hai
+            # Taaki heartbeat aur refresh timers ko sahi 'Ticket' (Token) mile
+            if isinstance(result, dict) and 'idToken' in result:
+                manager.current_id_token = result.get('idToken')
+                print(f"🔑 Manual Login Success: Token synced for {app_no}")
+            
+            # 2. Dashboard open karo (Timers iske andar start honge)
+            self.show_dashboard(result)
+            
+        elif result == "ALREADY_LOGGED_IN":
+            tmsg.showerror("Security Alert", 
+                           "This ID is already active on another device!\n"
+                           "Please logout from there or wait 2 minutes for session timeout.")
         else:
-            tmsg.showerror("Login Failed", "Invalid App No. or Password!")
+            # Wrong Password ya User Not Found ka error
+            tmsg.showerror("Login Failed", f"Invalid Credentials or Network Error: {result}")
 
     def on_dashboard_close(self):
-        """BOSS! Jab Dashboard ka 'X' dabbe, toh poora kissa khatam karo"""
-        if hasattr(self, 'dash_window'):
-            self.dash_window.destroy()
+        """Dashboard X pe band ho toh cleanup karo"""
+        print("Closing Application and marking offline...")
         
-        # self.deiconify()  <-- Is line ko hata do (Ye login dikhati thi)
-        self.quit()         # <-- Ye poore mainloop ko band kar dega
-        self.destroy()      # <-- Ye window process khatam kar dega
+        # 1. Heartbeat cancel karo
+        if hasattr(self, 'heart_job'):
+            self.after_cancel(self.heart_job)
+        
+        if hasattr(self, 'token_refresh_job') and self.token_refresh_job:
+            self.after_cancel(self.token_refresh_job)
+        
+        # 2. DB mein offline mark karo (is_active: False isi mein hai)
+        self.mark_offline_in_db()
+        
+        # 3. 800ms ka wait karo taaki Firebase request finish ho jaye
+        # Phir app ko band karo
+        self.after(800, self.final_cleanup)
+
+    def final_cleanup(self):
+        self.quit()
+        self.destroy()
 
     def handle_logout(self):
-        print("Logging out...")
-        manager.clear_session() 
-    
-        if hasattr(self, 'dash_window'):
-            self.dash_window.destroy()
-    # --- ENTRY RESET ---
-    # Agar tere entries ke naam ye hain, toh inhe khali karo:
-        try:
-            self.app_no_entry.delete(0, 'end')
-            self.pass_entry.delete(0, 'end')
-        except:
-            pass # Agar fields abhi exist nahi karte toh skip karo
+        """Smooth animation + Real-time DB Status Cleanup"""
+        print("Initiating smooth logout and clearing session...")
+        
+        # 1. Heartbeat turant band karo taaki status 'Active' na hota rahe
+        if hasattr(self, 'heart_job'):
+            self.after_cancel(self.heart_job)
+            print("💓 Heartbeat stopped.")
 
-        self.show_home() 
-        self.deiconify()
+        if hasattr(self, 'token_refresh_job') and self.token_refresh_job:
+            self.after_cancel(self.token_refresh_job)
+
+        # 2. Dashboard ko turant hide karo
+        if hasattr(self, 'dash_window'):
+            self.dash_window.withdraw()
+
+        # 3. Ek Loading Overlay Window (Visual feedback)
+        loading_screen = ctk.CTkToplevel()
+        loading_screen.overrideredirect(True) 
+        loading_screen.attributes("-topmost", True)
+        loading_screen.configure(fg_color=self.PRIMARY_BLUE)
+        
+        # Window centering logic
+        w, h = 400, 150
+        x = (self.winfo_screenwidth() // 2) - (w // 2)
+        y = (self.winfo_screenheight() // 2) - (h // 2)
+        loading_screen.geometry(f"{w}x{h}+{x}+{y}")
+
+        ctk.CTkLabel(loading_screen, text="Logging Out Safely...", 
+                     font=("Segoe UI", 20, "bold"), text_color="white").pack(pady=(40, 5))
+        ctk.CTkLabel(loading_screen, text="Cleaning up session data...", 
+                     font=("Segoe UI", 12), text_color="#94a3b8").pack()
+
+        def finalize_logout():
+            # 4. Database mein status 'Inactive' mark karo
+            # Ye sabse important step hai taaki doosra device login kar sake
+            self.mark_offline_in_db() 
+            
+            # 5. Local Backend Cleanup
+            manager.clear_session() 
+            
+            # 6. Dashboard Window fully destroy karo
+            if hasattr(self, 'dash_window'):
+                self.dash_window.destroy()
+            
+            # 7. UI Reset: Login entries khali karo
+            try:
+                # Agar login_form class attribute hai
+                if hasattr(self, 'login_form'):
+                    # Dhyan rakhna ki LoginUI mein entries ke yahi naam hon
+                    self.login_form.app_entry.delete(0, 'end')
+                    self.login_form.pass_entry.delete(0, 'end')
+            except:
+                pass
+
+            # 8. Final Switch
+            loading_screen.destroy()
+            self.show_home() 
+            self.deiconify() # MainApp wapas dikhao
+            print("✅ BOSS: Logout completed and status set to Inactive.")
+
+        # 1.2 Seconds ka delay (Thoda fast kar diya hai 1.5s se)
+        self.after(1200, finalize_logout)
 
     def show_dashboard(self, user_data):
+        """Dashboard kholne ka safe method + Heartbeat Initialization"""
         try:
+            # 1. Login window ko hide karo
             self.withdraw() 
-            # Dhyan se dekh: dash_window ko humne 'self' (MainApp) pass kiya hai
+            
+            # 2. Dashboard window initialize karo
+            # Dhyan rakhna 'db' variable globally accessible ho ya self.db ho
             self.dash_window = Dashboard_window.StudentDashboard(self, user_data, db)
             
-            # Agar user window 'X' se band kare toh on_dashboard_close chale
+            # 3. Protocol set karo taaki 'X' dabane par mark_offline_in_db chale
             self.dash_window.protocol("WM_DELETE_WINDOW", self.on_dashboard_close)
-        
+            
+            # 4. --- NAYA: HEARTBEAT START ---
+            # Ye har 30s mein DB update karega taaki session 'Active' rahe
+            self.start_heartbeat()
+
+            if not self.token_refresh_job:
+                self.schedule_token_refresh()
+            print("🚀 Dashboard active: Heartbeat & Token Refresh ON.")
+            
+            # 5. Window focus management
+            self.dash_window.lift()
+            self.dash_window.focus_force()
+            
         except Exception as e:
-            print(f"Dashboard Open Error: {e}")
+            print(f"❌ Dashboard Open Error: {e}")
+            # Agar error aaye toh login screen wapas dikhao
             self.deiconify()
+            tmsg.showerror("Error", f"Could not open Dashboard: {e}")
 
 if __name__ == "__main__":
     app = MainApp()

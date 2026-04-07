@@ -13,51 +13,69 @@ import socket
 import datetime
 import uuid
 import secrets_config
+import time
 
-current_id_token = None
+# --- GLOBAL CONFIG ---
+current_id_token = None  # Yeh main token hai jo poore app mein chalega
+SESSION_FILE = "user_session.json"
 
+# --- 1. TRACKING & SYSTEM INFO ---
 def get_tracking_info():
     try:
+        # Timeout 3s rakha hai taaki agar internet slow ho toh app hang na ho
         ip = requests.get('https://api.ipify.org', timeout=3).text
     except:
         ip = "Unknown/Offline"
     
     device = socket.gethostname()
-    time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    curr_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # --- MAC Address nikalne ka logic ---
-    # Isse "00:1A:2B:3C:4D:5E" format mein address milega
+    # Unique MAC Address logic
     mac_num = hex(uuid.getnode()).replace('0x', '').upper()
     mac = ':'.join(mac_num[i:i+2] for i in range(0, len(mac_num), 2))
-    # ------------------------------------
 
-    return ip, device, time, mac
+    return ip, device, curr_time, mac
 
-
-# --- 2. ID GENERATOR (Pure Integers) ---
+# --- 2. ID GENERATORS (UNIQUE) ---
 def generate_app_no(db):
-    app_no = int(f"2026{random.randint(100000, 999999)}")
-    check = db.child("users").child(str(app_no)).get().val()
-    if check: return generate_app_no(db)
-    return app_no
+    """UNIQUE Application Number starting with 2026"""
+    while True:
+        app_no = str(f"2026{random.randint(100000, 999999)}")
+        try:
+            # FIX: Try-except add kiya taaki unauthorized error se app crash na ho
+            check = db.child("users").child(app_no).get().val()
+            if not check:
+                return app_no
+        except:
+            # Agar permission error aaye, toh assume karo ki ID available hai ya loop continue karo
+            return app_no
 
-def assign_roll_no(db, app_no):
-    """Ye function tab chalega jab Dashboard pe pehli baar login hoga"""
-    new_roll = int(f"99{random.randint(100000, 999999)}")
-    
-    # Update in Database
-    db.child("users").child(app_no).update({"roll_no": str(new_roll)})
-    return new_roll
+def assign_roll_no(db, token=None):
+    """UNIQUE 8-digit Roll Number generate karta hai (With Token support)"""
+    attempts = 0
+    while attempts < 20:
+        new_roll = str(f"99{random.randint(100000, 999999)}")
+        try:
+            # Agar token hai toh login user ki tarah check karega (Rules bypass honge)
+            # Agar token nahi hai (pehle ki tarah), toh guest ki tarah check karega
+            query = db.child("users").order_by_child("roll_no").equal_to(new_roll)
+            check = query.get(token).val() if token else query.get().val()
+            
+            if not check:
+                return new_roll
+            print(f"⚠️ Collision: {new_roll} exists. Retrying...")
+        except Exception as e:
+            # Agar fir bhi rules block karein, toh fallback 
+            print(f"⚠️ Roll Check Warning: {e}")
+            return new_roll
+        attempts += 1
+    return str(f"99{random.randint(111111, 999999)}")
 
-# --- 1. IMGBB STORAGE SETUP ---
+# --- 3. STORAGE (IMGBB) ---
 def upload_to_storage(file_path, file_name):
-    """BOSS! Ye code photo ImgBB par bhejega aur permanent link dega."""
-    # APNI API KEY YAHAN DALO
     API_KEY = secrets_config.IMGBB_API_KEY
-    
     try:
         if not os.path.exists(file_path):
-            print(f"Error: File {file_path} nahi mili!")
             return None
 
         with open(file_path, "rb") as file:
@@ -66,181 +84,261 @@ def upload_to_storage(file_path, file_name):
                 "key": API_KEY,
                 "image": base64.b64encode(file.read()),
                 "name": file_name
-                # Expiration parameter nahi hai, isliye Manual deletion hoga
             }
-            
             response = requests.post(url, payload)
             result = response.json()
             
-            if result['success']:
-                photo_url = result['data']['url']
-                print(f"Success: Photo uploaded to ImgBB -> {photo_url}")
-                return photo_url
-            else:
-                print(f"ImgBB Error: {result['error']['message']}")
-                return None
-                
+            if result.get('success'):
+                return result['data']['url']
+            return None
     except Exception as e:
         print(f"Critical Error in Upload: {e}")
         return None
 
-# --- 3. REGISTRATION PROCESS ---
+# --- 4. AUTH & REGISTRATION ---
 def process_registration(db, auth, user_data, photo_frame):
-    """BOSS! Ye code tabhi upload karega jab sab kuch perfect hoga."""
     temp_path = None    
     try:
-        # 1. Pehle IDs generate karo
+        # 1. App No generate karo (Isme read ki zaroorat nahi kyunki ye key hai)
         app_no = generate_app_no(db)
-
-        # ---- SHADOW EMAIL LOGIC ----
-        # student apna app_no hi use karega, par piche yeh email banega
+        
         shadow_email = f"{app_no}@exam.com"
         password = user_data['password']
 
-        # 2. Firebase Auth mein account banao (Sabse pehle)
-        # Isse humein 'idToken' milega jo "Entry Pass" ka kaam karega
-        auth_user = auth.create_user_with_email_and_password(shadow_email, password)
-        user_token = auth_user['idToken'] # <--- YE HAI WOH CHABI (TOKEN)!
+        # 2. Pehle Auth Account banao
+        auth.create_user_with_email_and_password(shadow_email, password)
         
-        print(f"✅ Auth Account Created: {app_no}")
+        # 3. Turant Login karke TOKEN lo
+        login_session = auth.sign_in_with_email_and_password(shadow_email, password)
+        user_token = login_session['idToken'] 
+
+        # 4. AB ROLL NUMBER CHECK KARO (Token ke saath)
+        # Ab Firebase mana nahi karega kyunki banda logged in hai
+        new_roll = assign_roll_no(db, token=user_token)
         
-        # 2. Local save karo (sirf temporary)
-        temp_path = f"temp_{app_no}.jpg"
+        # 5. Tracking info fetch karo
+        ip, device, _, current_mac = get_tracking_info()
+        
+        # 6. Photo Processing & Upload
+        temp_path = f"temp_reg_{app_no}.jpg"
         cv2.imwrite(temp_path, photo_frame)
-        
-        # 4. AB IMAGE UPLOAD KARO (Internet check)
         photo_link = upload_to_storage(temp_path, f"STUDENT_{app_no}")
         
         if not photo_link:
-            raise Exception("Upload Error", "Photo upload Failed.\nPlease check Internet connection!")
+            raise Exception("Photo upload Failed! Check Internet.")
         
-        # 5. SAB KUCH SAHI HAI? TOH AB DATABASE MEIN ENTRY KARO
+        # 7. Profile Data Object
         student_profile = {
-            "app_no": str(app_no),
-            "roll_no": "Pending",
-            "name": user_data['name'],
+            "app_no": app_no,
+            "roll_no": new_roll,
+            "name": user_data['name'].strip().upper(),
             "mobile": user_data['mobile'],
             "personal_email": user_data['email'],
             "gender": user_data['gender'],
             "category": user_data['category'],
             "dob": f"{user_data['day']}-{user_data['month']}-{user_data['year']}",
             "exam_password": f"{user_data['day']}{user_data['month']}{user_data['year']}",
-            "password": user_data['password'],
+            "password": password,
             "photo_link": photo_link,
             "exam_status": "Pending",
-            "score": 0
+            "score": 0,
+            "is_active": False,
+            "last_seen": 0,
+            "MAC Address": current_mac,
+            "reg_ip": ip,
+            "reg_device": device
         }
 
-        # FINAL STEP: Database Entry
+        # 8. Database mein save karo (Token ke saath)
         db.child("users").child(app_no).set(student_profile, user_token)
-
-        # Cleanup
-        if os.path.exists(temp_path): os.remove(temp_path)
-        return app_no
+        
+        print(f"✅ Full Registration Success! App No: {app_no}, Roll No: {new_roll}")
+        return app_no 
 
     except Exception as e:
-        # AGAR KAHIN BHI ERROR AAYA:
-        print(f"ROLLBACK: Registration failed due to: {e}")
+        print(f"❌ REGISTRATION FAILED: {e}")
+        tmsg.showerror("Error", f"Registration Failed: {e}")
+        return None
         
-        # Cleanup local files agar registration fail hui
-        if temp_path and os.path.exists(temp_path): os.remove(temp_path)
-        
-        tmsg.showerror("Registration Error", f"Registration Failed! No data was uploaded.\nPlease check your Internet Connection!\nError: {e}")
-        return None, None
-    
+    finally:
+        if temp_path and os.path.exists(temp_path): 
+            try: os.remove(temp_path)
+            except: pass
+
 def validate_dashboard_login(db, auth, app_no, password):
     global current_id_token
     try:
-        # STEP 1: Shadow Email reconstruct karo (Student ko pata bhi nahi chalega)
         shadow_email = f"{app_no}@exam.com"
-
-        # STEP 2: Firebase Auth login (Auth Token milega)
         auth_user = auth.sign_in_with_email_and_password(shadow_email, password)
-        current_id_token = auth_user['idToken'] 
-        print(f"✅ Auth Success! Token generated.")
+        current_id_token = auth_user['idToken']
+        refresh_token = auth_user['refreshToken']
 
-        # STEP 3: Database se data uthao (Token use karke)
+        # Token pass karna zaroori hai
         user_node = db.child("users").child(app_no).get(current_id_token).val()
         
         if not user_node:
-            return False, None, False
+            return False, "User data missing!", False
 
-        # STEP 4: Tracking & Roll No Logic (Update with Token)
-        is_new = False 
-        update_data = {}
+        ip, device, _, current_mac = get_tracking_info()
+        current_time = time.time()
+        
+        last_seen = user_node.get("last_seen", 0)
+        is_active = user_node.get("is_active", False)
+        saved_mac = user_node.get("MAC Address", "Pending")
 
-        if user_node.get('roll_no') == "Pending":
-            new_roll = f"2{random.randint(100000, 999999)}"
-            update_data["roll_no"] = new_roll
-            user_node['roll_no'] = new_roll
-            is_new = True 
+        # Session Lock Logic
+        if is_active and (current_time - last_seen) < 120:
+            if saved_mac != "Pending" and saved_mac != current_mac:
+                return False, "ALREADY_LOGGED_IN", False
 
-        ip, device, time, mac = get_tracking_info()
-        update_data.update({
+        update_data = {
             "last_login_ip": ip,
             "last_login_device": device,
-            "last_login_time": time,
-            "MAC Address": mac
-        })
-        
-        # Database update with security token
+            "MAC Address": current_mac,
+            "is_active": True,
+            "last_seen": current_time
+        }
+
         db.child("users").child(app_no).update(update_data, current_id_token)
         user_node.update(update_data)
+        user_node['idToken'] = current_id_token # Sync local data
+        user_node['refreshToken'] = refresh_token
 
-        # Photo Download
-        photo_url = user_node.get('photo_link') 
-        if photo_url and photo_url != "Pending":
-            download_temp_image(photo_url)
+        if user_node.get('photo_link'):
+            download_temp_image(user_node['photo_link'])
 
         save_session(user_node)
-        return True, user_node, is_new 
+        return True, user_node, False 
         
     except Exception as e:
-        print(f"❌ Login Manager Error: {e}")
-        return False, None, False
+        err = str(e)
+        if "INVALID_PASSWORD" in err:
+            return False, "Galat password hai!", False
+        return False, f"Login Error: {err}", False
+
+# --- 5. SESSION MANAGEMENT ---
+def refresh_session_on_startup(auth):
+    """Startup par check karega aur token refresh karega taaki 1 ghante wali limit reset ho jaye"""
+    session_data = get_session_data()
+    if not session_data:
+        return None
+
+    try:
+        # Firebase refresh token use karke naya idToken mangwao
+        # 'refreshToken' login ke waqt milta hai
+        refreshed = auth.refresh(session_data['refreshToken'])
+        
+        # Naye tokens update karo
+        session_data['idToken'] = refreshed['idToken']
+        session_data['refreshToken'] = refreshed['refreshToken']
+        
+        # Global variable update karo
+        global current_id_token
+        current_id_token = refreshed['idToken']
+        
+        # Wapas save karo file mein
+        save_session(session_data)
+        print("🔄 Session Refreshed Successfully on Startup!")
+        return session_data
+    except Exception as e:
+        print(f"⚠️ Session Refresh Failed (Login expired): {e}")
+        clear_session() # Agar refresh fail hua toh purana session uda do
+        return None
+
+def save_session(user_data):
+    try:
+        with open(SESSION_FILE, "w") as f:
+            json.dump(user_data, f, indent=4) 
+        print("✅ Session saved locally.")
+    except Exception as e:
+        print(f"❌ Session save error: {e}")
+
+def get_session_data():
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return None
+    return None
 
 def get_token():
     global current_id_token
-    return current_id_token
-    
+    if current_id_token:
+        return current_id_token
+    data = get_session_data()
+    return data.get("idToken") if data else None
+
+def get_session():
+    """Backwards compatibility: Returns only app_no"""
+    data = get_session_data()
+    return data.get("app_no") if data else None
+
 def download_temp_image(url):    
-    # 1. Folder check karo
     folder = "temp_assets"
     if not os.path.exists(folder):
         os.makedirs(folder)
-        print(f"DEBUG: Folder '{folder}' created.")
-
-    # 2. Exact Path define karo
+    
     temp_path = os.path.join(folder, "current_user.jpg")
-    print(f"DEBUG: Trying to save at: {os.path.abspath(temp_path)}")
-
     try:
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
             with open(temp_path, "wb") as f:
                 f.write(r.content)
-            print(f"✅ SUCCESS: File downloaded and saved!")
+            print(f"✅ Image Downloaded")
             return True
-        else:
-            print(f"❌ FAILED: URL returned status {r.status_code}")
     except Exception as e:
-        print(f"❌ ERROR in download_temp_image: {e}")
+        print(f"❌ Download Error: {e}")
     return False
 
-    
 def validate_exam_login(db, roll_no, dob_input):
     try:
-        users = db.child("users").get().val()
-        for app_id, data in users.items():
-            if str(data.get('roll_no')) == str(roll_no) and str(data.get('exam_password')) == str(dob_input):
+        # Important: Token pass karo agar rules strict hain
+        token = get_token()
+        user_query = db.child("users").order_by_child("roll_no").equal_to(str(roll_no)).get(token)
+        user_dict = user_query.val()
+
+        if not user_dict: return False, None
+
+        for app_id, data in user_dict.items():
+            if str(data.get('exam_password')) == str(dob_input):
                 return True, data
         return False, None
-    except:
+    except Exception as e:
+        print(f"❌ Exam Auth Error: {e}")
         return False, None
-    
-# --- 5. PAWWORD RESET LOGIC ---
-# TODO: Implement
 
+def clear_session():
+    import os, shutil, gc
+    temp_folder = "temp_assets"
+    
+    try:
+        # 1. Session file delete karo
+        if os.path.exists(SESSION_FILE):
+            os.remove(SESSION_FILE)
+            print("✅ BOSS: Session file deleted.")
+        
+        # 2. Memory release karo taaki files "Access Denied" na dein
+        gc.collect() 
+        
+        # 3. Poora folder udao
+        if os.path.exists(temp_folder):
+            # Thoda wait (0.1s) taaki OS file handles release kar de
+            time.sleep(0.1) 
+            shutil.rmtree(temp_folder)
+            print("✅ BOSS: Temp assets cleared.")
+        else:
+            print("ℹ️ BOSS: No temp folder found.")
+            
+        return True
+    except Exception as e:
+        # Agar fir bhi fail ho, toh users ko bata do manual cleanup ya restart chahiye
+        print(f"❌ Cleanup Error: {e}")
+        return False
+    
+# Password Reset
+# TODO: Implements
+    
 # --- 5. REVIEW WINDOW (UI Feature) ---
 def open_review_window(db, user_data, photo_frame, on_confirm_callback):
     review_win = ctk.CTkToplevel()
@@ -317,51 +415,3 @@ def open_review_window(db, user_data, photo_frame, on_confirm_callback):
     ctk.CTkButton(footer, text="CONFIRM & FINAL SUBMIT", fg_color="#059669", hover_color="#047857",
                  text_color="white", width=250, height=38, font=("Segoe UI", 12, "bold"),
                  command=on_confirm).pack(side="right")
-    
-SESSION_FILE = "user_session.json"
-
-def save_session(user_data): # Pehle yahan sirf app_no tha
-    """Login success hone par poora tracking data save karo"""
-    try:
-        with open(SESSION_FILE, "w") as f:
-            # Hum poora user_data dabba hi save kar rahe hain
-            json.dump(user_data, f, indent=4) 
-        print("DEBUG: Full Session with Tracking saved locally.")
-    except Exception as e:
-        print(f"DEBUG: Session save error: {e}")
-
-def get_session():
-    if os.path.exists(SESSION_FILE):
-        try:
-            with open(SESSION_FILE, "r") as f:
-                data = json.load(f)
-                # Yeh abhi bhi sirf app_no return karega taaki purana code na phate
-                return data.get("app_no") 
-        except:
-            return None
-    return None
-
-def clear_session():
-    import os, shutil
-    file_name = "user_session.json"
-    temp_folder = "temp_assets"
-    
-    try:
-        # 1. Session file udao
-        if os.path.exists(file_name):
-            os.remove(file_name)
-            print("✅ BOSS: Session file deleted.")
-        
-        # 2. Poora folder udao (Andar ki files ke saath)
-        if os.path.exists(temp_folder):
-            # shutil.rmtree folder ko jadd se mita deta hai
-            shutil.rmtree(temp_folder)
-            print("✅ BOSS: Temp folder and all images cleared.")
-        else:
-            print("ℹ️ BOSS: Folder pehle se hi nahi hai.")
-            
-        return True
-    except Exception as e:
-        # Agar error aaye "Access Denied", iska matlab image abhi bhi UI pe open hai
-        print(f"❌ ERROR: Cleanup fail: {e}")
-        return False
