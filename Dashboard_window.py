@@ -324,19 +324,31 @@ class StudentDashboard(ctk.CTkToplevel):
             self.deiconify() # Error pe Dashboard wapas dikhao
     
     def load_profile_photo(self):
-    # Path yahan bhi define karna padega function ke andar
-        temp_path = "temp_assets/current_user.jpg"
+        # 1. Identifier se roll_no hataya
+        photo_url = self.user_data.get("photo_link", "")
+        student_filename = "current_user.jpg"
+        temp_path = os.path.join("temp_assets", student_filename)
+        
+        # 2. Logic ko unify kiya
+        photo_loaded = False
+        if not os.path.exists(temp_path) and photo_url and photo_url.startswith("http"):
+            downloaded_file = manager.download_temp_image(photo_url, student_filename)
+            if downloaded_file and os.path.exists(temp_path):
+                photo_loaded = True
+        elif os.path.exists(temp_path):
+            photo_loaded = True
     
-        if os.path.exists(temp_path):
+        # 3. GUI Layout
+        if photo_loaded:
             try:
                 img = Image.open(temp_path)
-                # Yahan self.ctk_img zaroori hai taaki image memory se na ude
                 self.ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(140, 140))
                 self.photo_label.configure(image=self.ctk_img, text="")
+                self.user_data["photo_path"] = temp_path
             except Exception as e:
                 print(f"❌ Dashboard Load Error: {e}")
         else:
-            print("⚠️ File mili hi nahi!")
+            print("⚠️ Student Profile File local par nahi hai aur download bhi fail ho gaya!")
 
     def update_nav_style(self, active_btn):
         # Sabko normal karo

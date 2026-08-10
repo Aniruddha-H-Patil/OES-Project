@@ -1,6 +1,6 @@
 import customtkinter as ctk
 import UI_composition as ui
-from PIL import Image
+from PIL import Image, ImageDraw
 import os
 import random
 import auth_manager as manager
@@ -42,15 +42,27 @@ class ExamSession:
 
         # === DEFINE ===
     def get_user_photo(self):
-        photo_path = self.user_data.get("photo_path", "temp_assets/current_user.jpg")
-        
-        if not os.path.exists(photo_path):
+        # 1. Roll number hata diya, sirf static filename use karo
+        photo_url = self.user_data.get("photo_link", "")
+        student_filename = "current_user.jpg"
+        local_path = os.path.join("temp_assets", student_filename)
+
+        # 2. Agar local path missing hai toh download karo
+        if not os.path.exists(local_path) and photo_url and photo_url.startswith("http"):
+            manager.download_temp_image(photo_url, student_filename)
+
+        if not os.path.exists(local_path):
             return None 
-            
-        # Ye line 'if' ke bahar honi chahiye (lekin function ke andar)
-        return ctk.CTkImage(light_image=Image.open(photo_path),
-                            dark_image=Image.open(photo_path),
-                                size=(150, 150))
+
+        try:
+            return ctk.CTkImage(
+                light_image=Image.open(local_path),
+                dark_image=Image.open(local_path),
+                size=(150, 150)
+            )
+        except Exception as e:
+            print(f"❌ Error in get_user_photo PIL open: {e}")
+            return None
     
     def check_pass_input(self, event=None):
         if len(self.pass_entry.get()) > 0:
@@ -118,18 +130,289 @@ class ExamSession:
                 
             self.exam_win.after(3000, clear_error)
 
+    def _create_rounded_image(self, path, size=(120, 70), radius=8):
+        """Helper method to load, resize, and round corners of any image cleanly."""
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            # Fixed: Convert to RGBA and use ImageDraw correctly
+            pil_img = Image.open(path).convert("RGBA")
+            pil_img = pil_img.resize(size, Image.Resampling.LANCZOS)
+            
+            mask = Image.new("L", size, 0)
+            draw = ImageDraw.Draw(mask)  # Correct way to call Draw
+            draw.rounded_rectangle([0, 0, size[0], size[1]], radius=radius, fill=255)
+            
+            rounded_img = Image.new("RGBA", size, (0, 0, 0, 0))
+            rounded_img.paste(pil_img, (0, 0), mask=mask)
+            
+            return ctk.CTkImage(light_image=rounded_img, dark_image=rounded_img, size=size)
+        except Exception as e:
+            print(f"❌ Error rounding image at {path}: {e}")
+            return None
+
+    def master_header(self, header_type="main"):
+        """
+        Master Header Controller: 
+        Layout-accurate architecture matching Layout_3.png perfectly with precise borders.
+        """
+        if hasattr(self, 'header_frame') and self.header_frame:
+            try:
+                self.header_frame.destroy()
+            except Exception:
+                pass
+                
+        if hasattr(self, 'sub_header_bar') and self.sub_header_bar:
+            try:
+                self.sub_header_bar.destroy()
+            except Exception:
+                pass
+
+        paper_id = self.paper_data.get('paper_id', 'temp_paper')
+        logo_url = self.paper_data.get('exam_logo', '') 
+        TEST_NAME = self.paper_data.get('TEST', "EXAM").upper()
+        
+        logo_filename = f"{paper_id}_logo.png"
+        local_logo_path = os.path.join("temp_assets", logo_filename)
+        os.makedirs("temp_assets", exist_ok=True)
+
+        dynamic_logo_available = False
+        if os.path.exists(local_logo_path):
+            dynamic_logo_available = True
+        elif logo_url and logo_url.strip():
+            if manager.download_temp_image(logo_url, logo_filename):
+                if os.path.exists(local_logo_path):
+                    dynamic_logo_available = True
+
+        software_logo_name = "SOFTWARE_LOGO.png"
+        software_logo_path = software_logo_name if os.path.exists(software_logo_name) else \
+                             os.path.join(os.path.dirname(os.path.abspath(__file__)), software_logo_name)
+
+        logo_to_load = local_logo_path if dynamic_logo_available else (software_logo_path if os.path.exists(software_logo_path) else None)
+
+        if header_type == "main":
+            self.header_frame = ctk.CTkFrame(self.exam_win, height=110, fg_color="#003366", corner_radius=0)
+            self.header_frame.pack(side="top", fill="x")
+            self.header_frame.pack_propagate(False)
+
+            left_container = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+            left_container.pack(side="left", fill="y", padx=15)
+
+            self.logo_img = self._create_rounded_image(software_logo_path, size=(130, 75), radius=8)
+            if self.logo_img:
+                self.logo_label = ctk.CTkLabel(left_container, image=self.logo_img, text="")
+                self.logo_label.pack(side="left", pady=17)
+                self.logo_label.image_ref = self.logo_img 
+
+            self.title_lbl = ctk.CTkLabel(
+                left_container, 
+                text="BOSS ONLINE EXAMINATION SYSTEM",
+                font=("Segoe UI", 24, "bold"), 
+                text_color="white"
+            )
+            self.title_lbl.pack(side="left", padx=15, pady=38)
+            
+            right_container = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+            right_container.pack(side="right", fill="y", padx=15)
+
+            self.dyn_logo_img = self._create_rounded_image(logo_to_load, size=(50, 50), radius=6)
+            if self.dyn_logo_img:
+                self.dyn_logo_label = ctk.CTkLabel(right_container, image=self.dyn_logo_img, text="")
+                self.dyn_logo_label.pack(side="right", padx=(10, 5), pady=30)
+                self.dyn_logo_label.image_ref = self.dyn_logo_img
+
+            self.exam_txt_lbl = ctk.CTkLabel(
+                right_container, 
+                text=TEST_NAME, 
+                font=("Segoe UI", 18, "bold"), 
+                text_color="#ffcc00"
+            )
+            self.exam_txt_lbl.pack(side="right", padx=(5, 10), pady=43)
+
+        elif header_type == "exam":            
+            # --- MATHEMATICAL HEIGHT SYNC ---
+            # Total height ko badha kar 132px kiya hai taaki tumhara custom 100x70 dynamic logo perfect fit ho sake.
+            TOTAL_MASTER_HEIGHT = 140
+            HEADER_HEIGHT = 95
+            SUB_BAR_HEIGHT = 40
+            SEPARATOR_HEIGHT = 2
+
+            # ─── MASTER CONTAINER ───
+            self.top_master_container = ctk.CTkFrame(
+                self.exam_win, 
+                height=TOTAL_MASTER_HEIGHT, 
+                fg_color="white", 
+                corner_radius=0
+            )
+            self.top_master_container.pack(side="top", fill="x")
+            self.top_master_container.pack_propagate(False)
+
+            # ─── RIGHT STANDALONE CANDIDATE BLOCK (Locks the Palette width & fills vertical space) ───
+            self.right_candidate_block = ctk.CTkFrame(
+                self.top_master_container, 
+                width=340, 
+                fg_color="white", 
+                corner_radius=0, 
+                border_width=1, 
+                border_color="#000000"
+            )
+            self.right_candidate_block.pack(side="right", fill="y")
+            self.right_candidate_block.pack_propagate(False)
+
+            candidate_name = self.user_data.get('name', "Candidate").upper()
+            candidate_roll = self.user_data.get('roll_no', "N/A")
+            candidate_photo_url = self.user_data.get('photo_link', "")
+
+            candidate_photo_filename = "current_user.jpg"
+            candidate_photo_path = os.path.join("temp_assets", candidate_photo_filename)
+
+            photo_ready = False
+            if os.path.exists(candidate_photo_path) and os.path.getsize(candidate_photo_path) > 0:
+                photo_ready = True
+            elif candidate_photo_url and candidate_photo_url.startswith("http"):
+                if manager.download_temp_image(candidate_photo_url, candidate_photo_filename):
+                    if os.path.exists(candidate_photo_path):
+                        photo_ready = True
+
+            # 1. Candidate Photo Container (Matches Left Main Header Height exactly)
+            self.photo_container_frame = ctk.CTkFrame(self.right_candidate_block, height=HEADER_HEIGHT, fg_color="transparent")
+            self.photo_container_frame.pack(side="top", fill="x")
+            self.photo_container_frame.pack_propagate(False)
+
+            # Photo size adjusted slightly for a clean look inside the fixed block
+            self.candidate_pic_img = self._create_rounded_image(candidate_photo_path, size=(160, 78), radius=6) if photo_ready else None
+
+            if self.candidate_pic_img:
+                self.candidate_pic_lbl = ctk.CTkLabel(self.photo_container_frame, image=self.candidate_pic_img, text="")
+                self.candidate_pic_lbl.pack(expand=True, pady=4)
+                self.candidate_pic_lbl.image_ref = self.candidate_pic_img
+            else:
+                self.candidate_pic_lbl = ctk.CTkLabel(
+                    self.photo_container_frame, 
+                    text="[ NO PHOTO ]", 
+                    font=("Segoe UI", 10, "bold"), 
+                    text_color="#94a3b8",
+                    width=160,
+                    height=78,
+                    fg_color="#e2e8f0"
+                )
+                self.candidate_pic_lbl.pack(expand=True, pady=4)
+
+            # Horizontal line separator inside right block (Creates layout sync line)
+            self.cand_separator = ctk.CTkFrame(self.right_candidate_block, height=SEPARATOR_HEIGHT, fg_color="#000000")
+            self.cand_separator.pack(side="top", fill="x")
+
+            # 2. Candidate Roll No Container (Matches Course Bar Height & fills bottom space)
+            self.candidate_sub_strip = ctk.CTkFrame(
+                self.right_candidate_block, 
+                height=SUB_BAR_HEIGHT, 
+                fg_color="white", 
+                corner_radius=0
+            )
+            self.candidate_sub_strip.pack(side="top", fill="both", expand=True)
+            self.candidate_sub_strip.pack_propagate(False)
+
+            self.lbl_cand_roll = ctk.CTkLabel(
+                self.candidate_sub_strip, 
+                text=f"Roll No: {candidate_roll}",
+                font=("Segoe UI", 12, "bold"), 
+                text_color="#000000", 
+                anchor="center"
+            )
+            self.lbl_cand_roll.pack(fill="both", expand=True)
+
+
+            # ─── LEFT MASTER BLOCK (Takes remaining space) ───
+            self.left_master_block = ctk.CTkFrame(self.top_master_container, fg_color="transparent", corner_radius=0)
+            self.left_master_block.pack(side="left", fill="both", expand=True)
+
+            # 1. Main Header Frame (Left Block Top)
+            self.header_frame = ctk.CTkFrame(
+                self.left_master_block, 
+                height=HEADER_HEIGHT, 
+                fg_color="white", 
+                corner_radius=0, 
+                border_width=1, 
+                border_color="#000000"
+            )
+            self.header_frame.pack(side="top", fill="x")
+            self.header_frame.pack_propagate(False)
+
+            # Software Logo & Name
+            left_container = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+            left_container.pack(side="left", fill="y", padx=15)
+            
+            self.logo_img = self._create_rounded_image(software_logo_path, size=(100, 60), radius=6)
+            if self.logo_img:
+                self.logo_label = ctk.CTkLabel(left_container, image=self.logo_img, text="")
+                self.logo_label.pack(side="left", pady=15)
+                self.logo_label.image_ref = self.logo_img
+
+            self.title_lbl = ctk.CTkLabel(
+                left_container, 
+                text="BOSS ONLINE EXAMINATION SYSTEM",
+                font=("Segoe UI", 16, "bold"), 
+                text_color="#000000"
+            )
+            self.title_lbl.pack(side="left", padx=15, pady=28)
+
+            # Respective Exam Logo & Name (Using your custom adjusted size here)
+            mid_container = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+            mid_container.pack(side="left", fill="y", padx=30)
+
+            self.dyn_logo_img = self._create_rounded_image(logo_to_load, size=(100, 70), radius=6)
+            if self.dyn_logo_img:
+                self.dyn_logo_label = ctk.CTkLabel(mid_container, image=self.dyn_logo_img, text="")
+                self.dyn_logo_label.pack(side="left", pady=10)
+                self.dyn_logo_label.image_ref = self.dyn_logo_img
+
+            self.exam_txt_lbl = ctk.CTkLabel(
+                mid_container, 
+                text=TEST_NAME, 
+                font=("Segoe UI", 14, "bold"), 
+                text_color="#000000"
+            )
+            self.exam_txt_lbl.pack(side="left", padx=10, pady=30)
+
+
+            # 2. Course & Timer Bar (Left Block Bottom)
+            self.sub_header_bar = ctk.CTkFrame(
+                self.left_master_block, 
+                height=SUB_BAR_HEIGHT, 
+                fg_color="white", 
+                corner_radius=0, 
+                border_width=1, 
+                border_color="#000000"
+            )
+            self.sub_header_bar.pack(side="top", fill="x")
+            self.sub_header_bar.pack_propagate(False)
+
+            self.course_lbl = ctk.CTkLabel(
+                self.sub_header_bar,
+                text=f"COURSE NAME: {TEST_NAME}",
+                font=("Segoe UI", 12, "bold"),
+                text_color="#000000"
+            )
+            self.course_lbl.pack(side="left", padx=20, pady=5)
+
+            self.timer_lbl = ctk.CTkLabel(
+                self.sub_header_bar,
+                text="TIMER: 03:00:00",
+                font=("Segoe UI", 12, "bold"),
+                text_color="#000000"
+            )
+            self.timer_lbl.pack(side="right", padx=20, pady=5)
+
     def setup_ui(self):
         # ---- WINDOW SECTION ----
         self.exam_win.title("Exam Session")
         self.exam_win.iconbitmap("BOSS-LOGO.ico")
         self.exam_win.attributes("-fullscreen", True)
-        self.exam_win.configure(fg_color="white", cursor="arrow")
+        self.exam_win.configure(fg_color="#f8fafc", cursor="arrow")
 
         # === UI ===
         # === HEADER SECTION ===
-        self.header_frame = ctk.CTkFrame(self.exam_win, height=40, fg_color="#003366", corner_radius=0)
-        self.header_frame.pack(side="top", fill="x")
-        # TODO: software logo and title
+        self.master_header("main")
 
         # === DETAILS SECTION ===
 
@@ -145,10 +428,14 @@ class ExamSession:
         sys_rand_no = f"{random.randint(1, 999):03}" # :03 ka matlab 3 digits (e.g., 007)
         display_sys_name = f"C{sys_rand_no}"
         
-        self.sys_lbl = ctk.CTkLabel(self.details_frame, text="System:", font=("Segoe UI", 40, "italic"), text_color="gray")
-        self.sys_lbl.pack(side="left", padx=20, pady=(60,60))
-        self.sys_no = ctk.CTkLabel(self.details_frame, text=display_sys_name, font=("Segoe UI", 40, "italic"), text_color="white")
-        self.sys_no.pack(side="left", padx=20, pady=(60,60))
+        self.L_panel = ctk.CTkFrame(self.details_frame, fg_color="transparent")
+        self.L_panel.pack(side="left", padx=20, fill="y")
+
+        self.sys_lbl = ctk.CTkLabel(self.L_panel, text="System:", font=("Segoe UI", 70, "italic"), text_color="gray")
+        self.sys_lbl.pack(side="top", padx=20)
+
+        self.sys_no = ctk.CTkLabel(self.L_panel, text=display_sys_name, font=("Segoe UI", 60, "italic"), text_color="white")
+        self.sys_no.pack(side="left", padx=20, pady=(45,60))
 
         # === PHOTO AND INFO ===
         self.R_panel = ctk.CTkFrame(self.details_frame, fg_color="transparent")
@@ -340,7 +627,6 @@ class ExamSession:
     def start_exam(self):
         print(f"Starting Exam... {self.paper_id}")
         self.inst_cont.destroy()
-        self.details_frame.pack(side="top", fill="x")
         self.Setup_exam_interface()
         # Yahan hum load_exam_interface() call karenge jo hum agle step mein banayenge
 
@@ -435,7 +721,7 @@ class ExamSession:
 
         # 4. Asli Palette Scrollable Frame
         # IMPORTANT: fg_color ko thoda alag rakho taaki dikhe ki frame kahan hai
-        self.palette_scroll = ctk.CTkScrollableFrame(self.right_panel, fg_color="#f0f0f0", 
+        self.palette_scroll = ctk.CTkFrame(self.right_panel, fg_color="#f0f0f0", 
                                                      width=280, height=400)
         self.palette_scroll.pack(fill="both", expand=True, padx=10, pady=5)
 
@@ -605,25 +891,16 @@ class ExamSession:
             self.next_question()
 
     def next_question(self):
-        """Agle sawal pe le jane wala engine"""
-        if self.current_question_index < len(self.subject_questions) - 1:
-            self.current_question_index += 1
-            self.load_question()
-            self.refresh_palette()
-        else:
-            print("INFO: Last question of this subject reached.")
-
-    def next_question(self):
-        # 1. Jo sawal abhi screen pe hai, usse 'not_answered' mark karo agar answer nahi diya
+        """Agle sawal pe le jane wala engine with Subject Looping"""
         self.update_current_status()
 
         subjects = self.available_subjects
         if self.current_question_index < len(self.subject_questions) - 1:
             self.current_question_index += 1
             self.load_question()
-            self.refresh_palette() # Palette update hoga aur pichla wala Red dikhega
+            self.refresh_palette() 
         else:
-            # Subject Loop
+            # Last question reached -> automatic switch to next subject
             next_idx = (subjects.index(self.current_subject) + 1) % len(subjects)
             self.switch_subject(subjects[next_idx])
 
@@ -663,22 +940,29 @@ class ExamSession:
                     )
 
     def Setup_exam_interface(self):
-        """Poora Exam Layout set karna"""
-        if hasattr(self, 'main_frame'): self.main_frame.destroy()
+        """Step 1: Main Base Layout and Panels Split Redesign"""
+        if hasattr(self, 'main_frame'): 
+            self.main_frame.destroy()
 
         if not hasattr(self, 'current_subject') or not self.current_subject:
             if self.available_subjects:
                 self.current_subject = self.available_subjects[0]
+        
+        # header from master_header
+        self.master_header("exam")
 
-        self.main_frame = ctk.CTkFrame(self.exam_win, fg_color="white")
+        # 1. Main Parent Frame (Ab flat white ki jagah clean premium grey background)
+        self.main_frame = ctk.CTkFrame(self.exam_win, fg_color="#f8fafc")
         self.main_frame.pack(fill="both", expand=True)
 
         self.sub_btns = {} 
 
-        # Tabs logic...
-        self.tabs_frame = ctk.CTkFrame(self.main_frame, height=45, fg_color="#f2f2f2", corner_radius=0)
+        # 2. Modern Top Header Bar (Height locked, white base with soft bottom border)
+        self.tabs_frame = ctk.CTkFrame(self.main_frame, height=55, fg_color="white", corner_radius=0, border_width=1, border_color="#e2e8f0")
         self.tabs_frame.pack(side="top", fill="x")
+        self.tabs_frame.pack_propagate(False)
 
+        # Tabs layout inside the new header
         for sub in self.available_subjects:
             is_active = (sub == self.current_subject)
             btn = ui.SubjectTab(
@@ -686,27 +970,30 @@ class ExamSession:
                 command=lambda s=sub: self.switch_subject(s),
                 is_active=is_active
             )
-            btn.pack(side="left", padx=2, pady=5)
+            btn.pack(side="left", padx=6, pady=8) # Professional top spacing
             
-            # ASLI FIX: Button ko save karo taaki baad mein color change kar sakein
+            # Button save kiya for color switching
             self.sub_btns[sub] = btn
 
-        # Main Panels
+        # 3. Content Area Container (15px padding taaki windows ke corners se space bane)
         self.content_container = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.content_container.pack(fill="both", expand=True)
+        self.content_container.pack(fill="both", expand=True, padx=15, pady=15)
 
-        self.left_panel = ctk.CTkFrame(self.content_container, fg_color="white", corner_radius=0)
-        self.left_panel.pack(side="left", fill="both", expand=True)
+        # 4. LEFT PANEL: Card Layout (Rounded corners aur boundary outline ke sath)
+        self.left_panel = ctk.CTkFrame(self.content_container, fg_color="white", corner_radius=12, border_width=1, border_color="#e2e8f0")
+        self.left_panel.pack(side="left", fill="both", expand=True, padx=(0, 15))
 
-        # SEQUENCE FIX: Pehle render (dhancha), phir load (data)
-        self.render_question_area() # <--- Pehle labels banao
+        # Core logic setup sequence: Pehle space layout, phir components
+        self.render_question_area() 
         
-        self.right_panel = ctk.CTkFrame(self.content_container, width=320, fg_color="#f5f5f5", border_width=1)
+        # 5. RIGHT PANEL: Card Layout (Purane dull grey framework se clean sleek card look)
+        self.right_panel = ctk.CTkFrame(self.content_container, width=300, fg_color="white", corner_radius=12, border_width=1, border_color="#e2e8f0")
         self.right_panel.pack(side="right", fill="y")
         self.right_panel.pack_propagate(False)
 
+        # Core components packing
         self.render_palette_area()
-        self.load_question() # <--- Ab data load karo, error nahi aayega
+        self.load_question() 
         self.render_nav_buttons()
 
 # TESTING CODE (Isse run karke dekh)

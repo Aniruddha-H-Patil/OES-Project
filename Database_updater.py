@@ -2,6 +2,8 @@ import pyrebase
 import json
 import secrets_config
 import getpass  # Password hide karne ke liye
+import auth_manager as manager
+import os
 
 # 1. Config initialize
 config = secrets_config.FIREBASE_CONFIG
@@ -67,6 +69,45 @@ def upload_question_paper(token):
     except Exception as e:
         print(f"❌ ERROR: {e}")
 
+def upload_exam_logo(token):
+    """Kisi specific paper ke liye logo upload karega aur Firebase node update karega"""
+    paper_id = input("\nKaunse Paper ID ke liye logo upload karna hai? (e.g. P001): ").strip().upper()
+    if not paper_id:
+        print("❌ Paper ID zaroori hai!")
+        return
+
+    # Check karo ki kya wo paper database mein sach mein exist karta hai
+    paper_check = db.child("papers").child(paper_id).get(token).val()
+    if not paper_check:
+        print(f"⚠️ Warning: Paper '{paper_id}' abhi database ke 'papers' node mein nahi hai!")
+        confirm_anyway = input("Kya tu fir bhi is ID ke liye logo insert karna chahta hai? (y/n): ")
+        if confirm_anyway.lower() != 'y':
+            return
+
+    image_path = input("📂 Local Image File Path dalo: ").strip()
+    # Quotes remove karne ke liye agar terminal par drag-and-drop kiya ho
+    image_path = image_path.replace('"', '').replace("'", "")
+
+    # File name extract karo path se (e.g., 'images/jee_logo.png' -> 'jee_logo')
+    file_name = os.path.splitext(os.path.basename(image_path))[0]
+
+    # === 🔥 Yahan tera auth_manager ka function call ho raha hai ===
+    print(f"🔄 Uploading {image_path} via auth_manager...")
+    direct_logo_url = manager.upload_to_storage(image_path, file_name)
+    print("uploaded succesfully to imgbb cloud")
+    
+    if not direct_logo_url:
+        print("❌ Logo upload cancel ho gaya kyunki ImgBB upload fail hua.")
+        return
+
+    # Direct Firebase node update (papers -> PXYZ -> exam_logo)
+    try:
+        db.child("papers").child(paper_id).update({"exam_logo": direct_logo_url}, token)
+        print(f"\n🎉 SUCCESS: Paper '{paper_id}' ka exam_logo update ho gaya cloud par!")
+        print(f"🔗 URL: {direct_logo_url}")
+    except Exception as e:
+        print(f"❌ Database update fail ho gaya: {e}")
+
 def main_menu():
     # Pehle login, phir kaam
     id_token = admin_login()
@@ -81,15 +122,18 @@ def main_menu():
         print("="*30)
         print("1. Update Available Test Cards (papers node)")
         print("2. Upload/Update Question Paper (questions node)")
-        print("3. Exit")
+        print("3. Upload exam logo to imgbb")
+        print("4. Exit")
         
-        choice = input("\nSelect Task (1/2/3): ")
+        choice = input("\nSelect Task (1/2/3/4): ")
         
         if choice == '1':
             update_available_tests(id_token)
         elif choice == '2':
             upload_question_paper(id_token)
         elif choice == '3':
+            upload_exam_logo(id_token)
+        elif choice == '4':
             print("Chalo bye, mehnat kar!")
             break
         else:

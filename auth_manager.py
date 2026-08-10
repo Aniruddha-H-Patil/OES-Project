@@ -274,22 +274,27 @@ def get_session():
     data = get_session_data()
     return data.get("app_no") if data else None
 
-def download_temp_image(url):    
+def download_temp_image(url, filename="current_user.jpg"):
     folder = "temp_assets"
     if not os.path.exists(folder):
         os.makedirs(folder)
     
-    temp_path = os.path.join(folder, "current_user.jpg")
+    temp_path = os.path.join(folder, filename)
+    
+    # AGAR FILE PEHLE SE HAI TO NETWORK REQ SKIP KARO
+    if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+        return temp_path
+        
     try:
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
             with open(temp_path, "wb") as f:
                 f.write(r.content)
-            print(f"✅ Image Downloaded")
-            return True
+            print(f"✅ Image Loaded/Downloaded as: {filename}")
+            return temp_path
     except Exception as e:
         print(f"❌ Download Error: {e}")
-    return False
+    return None
 
 def validate_exam_login(db, roll_no, dob_input):
     try:
